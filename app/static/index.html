@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Digital Wallet</title>
+<style>
+  :root { --navy:#1F4E79; --bg:#f4f6f9; --card:#fff; --line:#e1e5ea; --ok:#1e7e34; --err:#b00020; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:#1d2733; }
+  header { background:var(--navy); color:#fff; padding:16px 24px; }
+  header h1 { margin:0; font-size:20px; } header p { margin:2px 0 0; font-size:13px; opacity:.85; }
+  main { max-width:1100px; margin:20px auto; padding:0 16px; display:grid; gap:16px; grid-template-columns:1fr 1fr; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .wide { grid-column:1 / -1; }
+  h2 { margin:0 0 12px; font-size:16px; color:var(--navy); }
+  label { display:block; font-size:12px; font-weight:600; margin:8px 0 3px; }
+  input, select { width:100%; padding:8px 10px; border:1px solid #c5ccd6; border-radius:6px; font-size:14px; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  button { margin-top:12px; padding:9px 14px; border:0; border-radius:6px; background:var(--navy); color:#fff; font-size:14px; cursor:pointer; }
+  button.alt { background:#5b6b7c; } button:hover { opacity:.9; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); }
+  th { font-size:12px; color:#5b6b7c; text-transform:uppercase; letter-spacing:.03em; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; background:#e3f4e8; color:var(--ok); }
+  .badge.off { background:#fde7ea; color:var(--err); }
+  .in { color:var(--ok); } .out { color:var(--err); }
+  #msg { position:fixed; top:14px; right:14px; max-width:380px; padding:12px 16px; border-radius:8px; color:#fff; display:none; box-shadow:0 4px 14px rgba(0,0,0,.2); z-index:9; }
+  #msg.ok { background:var(--ok); } #msg.err { background:var(--err); }
+  .muted { color:#5b6b7c; font-size:13px; }
+  @media (max-width:760px) { main { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header><h1>Digital Wallet</h1><p>Create accounts, move money, and inspect the ledger. API docs: <a style="color:#cfe3f7" href="/docs">/docs</a></p></header>
+<div id="msg"></div>
+<main>
+  <section class="card wide">
+    <h2>Accounts</h2>
+    <table><thead><tr><th>ID</th><th>Owner</th><th>Email</th><th class="num">Balance</th><th>Status</th><th></th></tr></thead>
+    <tbody id="accounts"></tbody></table>
+    <p id="empty" class="muted" style="display:none">No accounts yet. Create one below.</p>
+  </section>
+
+  <section class="card">
+    <h2>Create account</h2>
+    <form id="f-create">
+      <label>Owner name</label><input id="c-name" required maxlength="100" placeholder="Asha Rao">
+      <label>Email</label><input id="c-email" type="email" required placeholder="asha@example.com">
+      <button>Create account</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Deposit / Withdraw</h2>
+    <form id="f-money">
+      <label>Account</label><select id="m-acc" class="acc-select" required></select>
+      <label>Amount</label><input id="m-amt" required inputmode="decimal" placeholder="100.00">
+      <div class="row"><button type="button" id="b-dep">Deposit</button><button type="button" id="b-wd" class="alt">Withdraw</button></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Transfer</h2>
+    <form id="f-transfer">
+      <div class="row"><div><label>From</label><select id="t-from" class="acc-select" required></select></div>
+      <div><label>To</label><select id="t-to" class="acc-select" required></select></div></div>
+      <label>Amount</label><input id="t-amt" required inputmode="decimal" placeholder="25.00">
+      <button>Send money</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Transaction history</h2>
+    <label>Account</label><select id="h-acc" class="acc-select"></select>
+    <table style="margin-top:8px"><thead><tr><th>#</th><th>Type</th><th class="num">Amount</th><th class="num">Balance after</th></tr></thead>
+    <tbody id="history"></tbody></table>
+    <p id="h-empty" class="muted" style="display:none">No transactions yet.</p>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function toast(text, ok) {
+  const m = $('msg'); m.textContent = text; m.className = ok ? 'ok' : 'err'; m.style.display = 'block';
+  clearTimeout(toast.t); toast.t = setTimeout(() => m.style.display = 'none', 4500);
+}
+
+// Every money-moving request gets a fresh Idempotency-Key, so an accidental double submit is applied once.
+async function api(method, url, body) {
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (method === 'POST' && /deposit|withdraw|transfers/.test(url)) headers['Idempotency-Key'] = crypto.randomUUID();
+  const r = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    let msg = 'Request failed';
+    if (data.error) msg = data.error.message;
+    else if (Array.isArray(data.detail)) msg = data.detail.map(d => d.msg.replace('Value error, ', '')).join('; ');
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function refresh(keepHistory = true) {
+  const accs = await api('GET', '/accounts');
+  $('empty').style.display = accs.length ? 'none' : 'block';
+  $('accounts').innerHTML = accs.map(a => `<tr><td>${a.id}</td><td>${esc(a.owner_name)}</td><td>${esc(a.email)}</td>
+    <td class="num">${esc(a.balance)}</td><td><span class="badge ${a.is_active ? '' : 'off'}">${a.is_active ? 'active' : 'closed'}</span></td>
+    <td>${a.is_active ? `<a href="#" data-close="${a.id}">close</a>` : ''}</td></tr>`).join('');
+  const prev = {}; document.querySelectorAll('.acc-select').forEach(s => prev[s.id] = s.value);
+  const opts = accs.map(a => `<option value="${a.id}">#${a.id} ${esc(a.owner_name)} (${esc(a.balance)})</option>`).join('');
+  document.querySelectorAll('.acc-select').forEach(s => { s.innerHTML = opts; if (prev[s.id]) s.value = prev[s.id]; });
+  if (accs.length > 1 && $('t-to').value === $('t-from').value) $('t-to').selectedIndex = 1;
+  if (keepHistory) await loadHistory();
+}
+
+async function loadHistory() {
+  const id = $('h-acc').value;
+  if (!id) { $('history').innerHTML = ''; $('h-empty').style.display = 'block'; return; }
+  const rows = await api('GET', `/accounts/${id}/transactions?limit=20`);
+  $('h-empty').style.display = rows.length ? 'none' : 'block';
+  $('history').innerHTML = rows.map(t => {
+    const incoming = t.type === 'DEPOSIT' || t.type === 'TRANSFER_IN';
+    return `<tr><td>${t.id}</td><td>${t.type.replace('_', ' ').toLowerCase()}</td>
+      <td class="num ${incoming ? 'in' : 'out'}">${incoming ? '+' : '-'}${esc(t.amount)}</td><td class="num">${esc(t.balance_after)}</td></tr>`;
+  }).join('');
+}
+
+async function run(fn, okText) {
+  try { await fn(); toast(okText, true); await refresh(); } catch (e) { toast(e.message, false); }
+}
+
+$('f-create').addEventListener('submit', e => { e.preventDefault();
+  run(async () => { await api('POST', '/accounts', { owner_name: $('c-name').value, email: $('c-email').value });
+    $('f-create').reset(); }, 'Account created'); });
+
+const money = kind => () => run(() => api('POST', `/accounts/${$('m-acc').value}/${kind}`, { amount: $('m-amt').value.trim() }),
+  kind === 'deposit' ? 'Deposit successful' : 'Withdrawal successful');
+$('b-dep').addEventListener('click', money('deposit'));
+$('b-wd').addEventListener('click', money('withdraw'));
+
+$('f-transfer').addEventListener('submit', e => { e.preventDefault();
+  run(() => api('POST', '/transfers', { from_account_id: +$('t-from').value, to_account_id: +$('t-to').value, amount: $('t-amt').value.trim() }),
+    'Transfer completed'); });
+
+$('h-acc').addEventListener('change', loadHistory);
+$('accounts').addEventListener('click', e => { const id = e.target.dataset.close; if (!id) return; e.preventDefault();
+  if (confirm(`Close account #${id}? (balance must be zero)`)) run(() => api('POST', `/accounts/${id}/deactivate`), 'Account closed'); });
+
+refresh().catch(e => toast(e.message, false));
+</script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+      POSTGRES_DB: wallet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg2://wallet:wallet@db:5432/wallet
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # docker compose run --rm tests   -> runs the whole suite against PostgreSQL
+  tests:
+    build: .
+    profiles: ["test"]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://wallet:wallet@db:5432/wallet
+      TEST_DATABASE_URL: postgresql+psycopg2://wallet:wallet@db:5432/wallet
+    command: pytest --cov=app --cov-report=term-missing
+    depends_on:
+      db:
+        condition: service_healthy
